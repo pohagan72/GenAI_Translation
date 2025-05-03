@@ -32,6 +32,18 @@
     <div class="container">
         <h1>File Translator & Analyzer</h1>
 
+        {# Display flash messages (if any) - Useful for download errors #}
+        {% with messages = get_flashed_messages(with_categories=true) %}
+          {% if messages %}
+            {% for category, message in messages %}
+              <div class="alert alert-{{ category if category else 'info' }} {{ 'error' if category == 'error' else '' }}" role="alert">
+                {{ message }}
+              </div>
+            {% endfor %}
+          {% endif %}
+        {% endwith %}
+
+        {# Display processing errors from the index route #}
         {% if error %}
             <p class="error">{{ error }}</p>
         {% endif %}
@@ -48,7 +60,7 @@
                 <select name="target_language" id="target_language" required>
                     <option value="" disabled {% if target_language_code is none %}selected{% endif %}>-- Select Language --</option>
                     {% for code, name in target_languages.items() %}
-                        <option value="{{ code }}" {% if target_language_code == code or (target_language_code is none and code == 'en') %}selected{% endif %}>
+                        <option value="{{ code }}" {% if target_language_code == code or (target_language_code is none and code == 'en' and not results) %}selected{% endif %}>
                             {{ name }}
                         </option>
                     {% endfor %}
@@ -62,7 +74,7 @@
             <div class="results">
                 <h2>Results for: {{ results.original_filename }}</h2>
 
-                <!-- *** UPDATED Token & Cost Info Display *** -->
+                <!-- Token & Cost Info Display -->
                 <div class="token-info">
                     <strong>LLM Usage & Estimated Cost:</strong><br>
                     Analysis Step - Input: {{ results.analysis_prompt_tokens | default('N/A') }} tokens / Output: {{ results.analysis_completion_tokens | default('N/A') }} tokens
@@ -73,7 +85,7 @@
                     <br>
                     <strong>Total Estimated Cost: $<span title="${{ results.total_cost_usd | default(0.0) }}">{{ "{:,.8f}".format(results.total_cost_usd | default(0.0)) }}</span></strong>
                 </div>
-                <!-- *** END Token & Cost Info Display *** -->
+                <!-- END Token & Cost Info Display -->
 
                 <h3>Language Analysis (Original Text)</h3>
                 <pre id="analysisJson">{{ results.analysis_json_str }}</pre>
@@ -81,20 +93,90 @@
                 <h3>Translated Text ({{ target_languages.get(results.target_language, results.target_language) }})</h3> {# Use .get for safety #}
                 <pre>{{ results.translated_text }}</pre>
 
+                <!-- *** UPDATED Download Form - Passes data directly *** -->
                 <form action="{{ url_for('download_results') }}" method="POST" style="display: inline-block;">
-                     <input type="hidden" name="analysis_blob_name" value="{{ results.analysis_blob_name }}">
-                     <input type="hidden" name="translation_blob_name" value="{{ results.translation_blob_name }}">
+                     {# Pass actual data in hidden fields. Use |e filter for HTML escaping. #}
+                     <input type="hidden" name="analysis_json_str" value="{{ results.analysis_json_str | e }}">
+                     <input type="hidden" name="translated_text" value="{{ results.translated_text | e }}">
                      <input type="hidden" name="original_filename" value="{{ results.original_filename }}">
+                     <input type="hidden" name="target_language_code" value="{{ results.target_language }}"> {# Pass lang code for zip naming #}
                      <button type="submit" class="action-button">Download Results (.zip)</button>
                 </form>
+                 <!-- *** END UPDATED Download Form *** -->
 
             </div>
         {% endif %}
     </div>
 
     <script>
-        // --- JavaScript remains the same ---
-        const dropZone = document.getElementById('dropZone'); const fileInput = document.getElementById('fileInput'); const fileNameDisplay = document.getElementById('fileNameDisplay'); dropZone.addEventListener('dragover', (e) => { e.preventDefault(); dropZone.classList.add('dragover'); }); dropZone.addEventListener('dragleave', () => { dropZone.classList.remove('dragover'); }); dropZone.addEventListener('drop', (e) => { e.preventDefault(); dropZone.classList.remove('dragover'); if (e.dataTransfer.files.length) { const allowedExtensions = /(\.txt|\.docx|\.xlsx|\.pptx|\.pdf)$/i; if (!allowedExtensions.exec(e.dataTransfer.files[0].name)) { alert('Invalid file type.'); return; } fileInput.files = e.dataTransfer.files; updateFileNameDisplay(); } }); fileInput.addEventListener('change', updateFileNameDisplay); function updateFileNameDisplay() { if (fileInput.files.length) { const allowedExtensions = /(\.txt|\.docx|\.xlsx|\.pptx|\.pdf)$/i; if (!allowedExtensions.exec(fileInput.files[0].name)) { alert('Invalid file type selected.'); fileInput.value = ''; fileNameDisplay.textContent = ''; return; } fileNameDisplay.textContent = `Selected: ${fileInput.files[0].name}`; } else { fileNameDisplay.textContent = ''; } } dropZone.addEventListener('click', (e) => { const labelElement = dropZone.querySelector('label[for="fileInput"]'); if (e.target === labelElement) { return; } if (e.target === dropZone && !fileInput.files.length) { fileInput.click(); } });
+        // --- JavaScript for Drag & Drop and File Selection ---
+        const dropZone = document.getElementById('dropZone');
+        const fileInput = document.getElementById('fileInput');
+        const fileNameDisplay = document.getElementById('fileNameDisplay');
+        const allowedExtensions = /(\.txt|\.docx|\.xlsx|\.pptx|\.pdf)$/i; // Define allowed extensions
+
+        dropZone.addEventListener('dragover', (e) => {
+            e.preventDefault(); // Prevent default browser behavior
+            dropZone.classList.add('dragover');
+        });
+
+        dropZone.addEventListener('dragleave', () => {
+            dropZone.classList.remove('dragover');
+        });
+
+        dropZone.addEventListener('drop', (e) => {
+            e.preventDefault();
+            dropZone.classList.remove('dragover');
+            if (e.dataTransfer.files.length) {
+                // Validate file type on drop
+                if (!allowedExtensions.exec(e.dataTransfer.files[0].name)) {
+                    alert('Invalid file type. Please upload .txt, .docx, .xlsx, .pptx, or .pdf files.');
+                    clearFileInput();
+                    return;
+                }
+                fileInput.files = e.dataTransfer.files; // Assign dropped files to input
+                updateFileNameDisplay();
+            }
+        });
+
+        fileInput.addEventListener('change', () => {
+             // Validate file type on selection change
+            if (fileInput.files.length && !allowedExtensions.exec(fileInput.files[0].name)) {
+                alert('Invalid file type selected. Please choose .txt, .docx, .xlsx, .pptx, or .pdf files.');
+                clearFileInput();
+                return;
+            }
+            updateFileNameDisplay();
+        });
+
+        function updateFileNameDisplay() {
+            if (fileInput.files.length) {
+                fileNameDisplay.textContent = `Selected: ${fileInput.files[0].name}`;
+                fileNameDisplay.style.display = 'block'; // Show the display element
+            } else {
+                fileNameDisplay.textContent = '';
+                fileNameDisplay.style.display = 'none'; // Hide if no file
+            }
+        }
+
+        function clearFileInput() {
+            fileInput.value = ''; // Clear the selected file
+            updateFileNameDisplay(); // Update the display
+        }
+
+        // Make the drop zone clickable to trigger file input, but not if clicking the label itself
+        dropZone.addEventListener('click', (e) => {
+            const labelElement = dropZone.querySelector('label[for="fileInput"]');
+            // If the click target is the label or the file input itself, let the browser handle it
+            if (e.target === labelElement || e.target === fileInput) {
+                return;
+            }
+            // Otherwise, if clicking elsewhere in the zone, trigger the file input
+            fileInput.click();
+        });
+
+        // Initial check in case a file is pre-selected (e.g., browser remembering)
+        updateFileNameDisplay();
     </script>
 </body>
 </html>

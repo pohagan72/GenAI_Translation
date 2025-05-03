@@ -8,10 +8,10 @@ import re
 import logging
 from collections import defaultdict
 from flask import (
-    Flask, request, render_template, send_file, redirect, url_for, flash, Response
+    Flask, request, render_template, send_file, redirect, url_for, flash, Response, session
 )
 from dotenv import load_dotenv
-from google.cloud import storage
+# Removed: from google.cloud import storage
 import google.generativeai as genai
 from google.generativeai.types import HarmCategory, HarmBlockThreshold, GenerationConfig
 from google.api_core import exceptions as google_exceptions
@@ -24,7 +24,7 @@ from PyPDF2 import PdfReader
 
 load_dotenv()
 app = Flask(__name__)
-app.secret_key = os.urandom(24)
+app.secret_key = os.urandom(24) # Make sure this is set for session use
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
 # --- Pricing Constants (Adjust if prices change) ---
@@ -36,17 +36,18 @@ PRICE_PER_INPUT_TOKEN = PRICE_PER_MILLION_INPUT_TOKENS / 1_000_000
 PRICE_PER_OUTPUT_TOKEN = PRICE_PER_MILLION_OUTPUT_TOKENS / 1_000_000
 # --------------------------------------------------
 
-# --- GCS and Gemini Configuration ---
-try:
-    GOOGLE_CLOUD_PROJECT = os.environ['GOOGLE_CLOUD_PROJECT']
-    GCS_BUCKET_NAME = os.environ['GCS_BUCKET_NAME']
-    storage_client = storage.Client(project=GOOGLE_CLOUD_PROJECT)
-    bucket = storage_client.bucket(GCS_BUCKET_NAME)
-except KeyError as e:
-    raise RuntimeError(f"Missing GCS environment variable: {e}.") from e
-except Exception as e:
-    raise RuntimeError(f"Failed GCS client init: {e}") from e
+# --- GCS Configuration REMOVED ---
+# try:
+#     GOOGLE_CLOUD_PROJECT = os.environ['GOOGLE_CLOUD_PROJECT']
+#     GCS_BUCKET_NAME = os.environ['GCS_BUCKET_NAME']
+#     storage_client = storage.Client(project=GOOGLE_CLOUD_PROJECT)
+#     bucket = storage_client.bucket(GCS_BUCKET_NAME)
+# except KeyError as e:
+#     raise RuntimeError(f"Missing GCS environment variable: {e}.") from e
+# except Exception as e:
+#     raise RuntimeError(f"Failed GCS client init: {e}") from e
 
+# --- Gemini Configuration ---
 try:
     GOOGLE_API_KEY = os.environ['GOOGLE_API_KEY']
     GEMINI_MODEL_NAME = os.environ.get('GEMINI_MODEL', 'gemini-1.5-flash-latest')
@@ -103,15 +104,42 @@ def extract_text_from_file(file_storage):
     filename = file_storage.filename; filename_lower = filename.lower(); text_content = ""
     app.logger.info(f"Attempting text extraction: {filename}")
     try:
-        if filename_lower.endswith('.txt'): text_content = file_storage.read().decode('utf-8', errors='ignore')
-        elif filename_lower.endswith('.docx'): document = docx.Document(file_storage); text_content = "\n".join([p.text for p in document.paragraphs if p.text])
-        elif filename_lower.endswith('.xlsx'): workbook = openpyxl.load_workbook(file_storage, read_only=True, data_only=True); text_content = "\n".join([" ".join([str(c.value).strip() for c in row if c.value is not None]) for sheet in workbook.worksheets for row in sheet.iter_rows() if any(c.value for c in row)])
-        elif filename_lower.endswith('.pptx'): presentation = pptx.Presentation(file_storage); full_text = []; [full_text.extend([shape.text.strip() for shape in slide.shapes if shape.has_text_frame and shape.text.strip()] + ([slide.notes_slide.notes_text_frame.text.strip()] if slide.has_notes_slide and slide.notes_slide.notes_text_frame.text else [])) for slide in presentation.slides]; text_content = "\n\n".join(filter(None, ["\n".join(slide_texts) for slide_texts in [full_text] if slide_texts])) # Compacted slightly
-        elif filename_lower.endswith('.pdf'): reader = PdfReader(file_storage); full_text = []; [full_text.append(page.extract_text().strip()) for page in reader.pages if page.extract_text()]; text_content = "\n\n".join(full_text) # Assumes non-encrypted
-        else: raise ValueError("Unsupported file type.")
+        # Ensure we can read the file multiple times if needed, or read it once
+        file_bytes = file_storage.read() # Read the whole content into memory
+        file_storage.seek(0) # Reset pointer in case the library needs it
+
+        if filename_lower.endswith('.txt'):
+            text_content = file_bytes.decode('utf-8', errors='ignore')
+        elif filename_lower.endswith('.docx'):
+            document = docx.Document(io.BytesIO(file_bytes)) # Use BytesIO wrapper
+            text_content = "\n".join([p.text for p in document.paragraphs if p.text])
+        elif filename_lower.endswith('.xlsx'):
+            workbook = openpyxl.load_workbook(io.BytesIO(file_bytes), read_only=True, data_only=True) # Use BytesIO
+            text_content = "\n".join([" ".join([str(c.value).strip() for c in row if c.value is not None]) for sheet in workbook.worksheets for row in sheet.iter_rows() if any(c.value for c in row)])
+        elif filename_lower.endswith('.pptx'):
+            presentation = pptx.Presentation(io.BytesIO(file_bytes)) # Use BytesIO
+            full_text = []
+            for slide in presentation.slides:
+                slide_texts = [shape.text.strip() for shape in slide.shapes if shape.has_text_frame and shape.text.strip()]
+                if slide.has_notes_slide and slide.notes_slide.notes_text_frame and slide.notes_slide.notes_text_frame.text:
+                    slide_texts.append(slide.notes_slide.notes_text_frame.text.strip())
+                if slide_texts:
+                     full_text.extend(slide_texts)
+            text_content = "\n\n".join(filter(None, full_text))
+        elif filename_lower.endswith('.pdf'):
+            reader = PdfReader(io.BytesIO(file_bytes)) # Use BytesIO
+            full_text = [page.extract_text().strip() for page in reader.pages if page.extract_text()]
+            text_content = "\n\n".join(full_text) # Assumes non-encrypted
+        else:
+            raise ValueError("Unsupported file type.")
+
         app.logger.info(f"Extracted {len(text_content)} chars.")
         return text_content
-    except Exception as e: raise ValueError(f"Extraction failed for {filename}: {e}") from e
+    # Ensure to catch specific library errors if needed
+    except Exception as e:
+        app.logger.error(f"Extraction failed for {filename}: {e}", exc_info=True)
+        raise ValueError(f"Extraction failed for {filename}: {e}") from e
+
 
 # --- [ analyze_text function remains unchanged ] ---
 def analyze_text(text):
@@ -195,19 +223,10 @@ Input text:
     except google_exceptions.GoogleAPIError as e: raise RuntimeError(f"Translation failed: Google API error ({type(e).__name__}).") from e
     except Exception as e: app.logger.error(f"Unexpected translation error: {e}", exc_info=True); raise RuntimeError("Translation failed: Unexpected error.") from e
 
-# --- [ GCS upload, download, delete functions remain unchanged ] ---
-def upload_to_gcs(data_bytes, destination_blob_name):
-    try: blob = bucket.blob(destination_blob_name); blob.upload_from_string(data_bytes, content_type='application/octet-stream'); app.logger.info(f"Uploaded to GCS: {destination_blob_name}")
-    except Exception as e: raise RuntimeError(f"GCS Upload Failed ({destination_blob_name}): {e}") from e
-def download_from_gcs(source_blob_name):
-    try: blob = bucket.blob(source_blob_name); return blob.download_as_bytes()
-    except storage.exceptions.NotFound: raise RuntimeError(f"GCS Download Failed: Blob not found {source_blob_name}")
-    except Exception as e: raise RuntimeError(f"GCS Download Failed ({source_blob_name}): {e}") from e
-def delete_from_gcs(blob_name):
-    if not blob_name: return
-    try: bucket.blob(blob_name).delete(if_generation_match=None); app.logger.info(f"Deleted GCS blob: {blob_name}")
-    except storage.exceptions.NotFound: pass
-    except Exception as e: app.logger.warning(f"Failed to delete GCS blob {blob_name}: {e}")
+# --- GCS helper functions REMOVED ---
+# def upload_to_gcs(data_bytes, destination_blob_name): ...
+# def download_from_gcs(source_blob_name): ...
+# def delete_from_gcs(blob_name): ...
 
 # --- Flask Routes ---
 
@@ -216,8 +235,10 @@ def index():
     results = None
     error = None
     target_language_code = None
-    analysis_blob_name = None
-    translation_blob_name = None
+    # GCS blob names removed
+    # analysis_blob_name = None
+    # translation_blob_name = None
+
     # Initialize vars for display
     analysis_prompt_tokens, analysis_completion_tokens = 0, 0
     translation_prompt_tokens, translation_completion_tokens = 0, 0
@@ -230,11 +251,17 @@ def index():
             file = request.files['file']; target_language_code = request.form.get('target_language')
             if file.filename == '': raise ValueError('No file selected.')
             if not target_language_code or target_language_code not in SUPPORTED_LANGUAGES: raise ValueError('Invalid target language.')
-            original_filename = file.filename; file_content_length = file.content_length
+            original_filename = file.filename
+
+            # Ensure file pointer is at the start before passing to extraction
+            file.seek(0)
 
             app.logger.info("Step 1: Extracting Text...")
-            original_text = extract_text_from_file(file)
+            original_text = extract_text_from_file(file) # Reads file content in memory
             app.logger.info("Step 1: Text Extraction Complete.")
+
+            if len(original_text) > 1_000_000: # Example: Warn if extracted text is very large
+                 app.logger.warning(f"Extracted text is large ({len(original_text)} chars). Processing might be slow or hit LLM limits.")
 
             app.logger.info("Step 2: Analyzing Text (Using LLM)...")
             analysis_response = analyze_text(original_text)
@@ -245,10 +272,12 @@ def index():
             analysis_json_str = json.dumps(analysis_result_dict, indent=2)
             app.logger.info("Step 2: LLM Analysis Complete.")
 
-            unique_id = uuid.uuid4(); base_filename = re.sub(r'[^\w\-.]', '_', os.path.splitext(original_filename)[0])
-            analysis_blob_name = f"temp/{unique_id}/{base_filename}_analysis.json"
-            app.logger.info(f"Step 2: Uploading Analysis to GCS...")
-            upload_to_gcs(analysis_json_str.encode('utf-8'), analysis_blob_name)
+            # --- GCS Upload REMOVED ---
+            # unique_id = uuid.uuid4(); base_filename = re.sub(r'[^\w\-.]', '_', os.path.splitext(original_filename)[0])
+            # analysis_blob_name = f"temp/{unique_id}/{base_filename}_analysis.json"
+            # app.logger.info(f"Step 2: Uploading Analysis to GCS...")
+            # upload_to_gcs(analysis_json_str.encode('utf-8'), analysis_blob_name)
+            app.logger.info(f"Step 2: Skipping GCS upload for analysis.")
 
             app.logger.info("Step 3: Preparing for Translation...")
             translated_text_content = ""
@@ -276,9 +305,11 @@ def index():
                         translation_completion_tokens = translation_response["completion_tokens"]
                         app.logger.info("Step 3: Translation API Call Complete.")
 
-            translation_blob_name = f"temp/{unique_id}/{base_filename}_translated_{target_language_code}.txt"
-            app.logger.info(f"Step 3: Uploading Translation Result to GCS...")
-            upload_to_gcs(translated_text_content.encode('utf-8'), translation_blob_name)
+            # --- GCS Upload REMOVED ---
+            # translation_blob_name = f"temp/{unique_id}/{base_filename}_translated_{target_language_code}.txt"
+            # app.logger.info(f"Step 3: Uploading Translation Result to GCS...")
+            # upload_to_gcs(translated_text_content.encode('utf-8'), translation_blob_name)
+            app.logger.info(f"Step 3: Skipping GCS upload for translation.")
 
             # --- Step 4: Calculate Costs ---
             app.logger.info("Step 4: Calculating Estimated Costs...")
@@ -291,17 +322,18 @@ def index():
 
             app.logger.info("Step 5: Preparing results for display...")
             results = {
+                # Pass the actual data directly
                 "analysis_json_str": analysis_json_str,
                 "translated_text": translated_text_content,
                 "original_filename": original_filename,
-                "analysis_blob_name": analysis_blob_name,
-                "translation_blob_name": translation_blob_name,
-                "target_language": target_language_code,
+                # Removed blob names
+                # "analysis_blob_name": analysis_blob_name,
+                # "translation_blob_name": translation_blob_name,
+                "target_language": target_language_code, # Keep for display/zip naming
                 "analysis_prompt_tokens": analysis_prompt_tokens,
                 "analysis_completion_tokens": analysis_completion_tokens,
                 "translation_prompt_tokens": translation_prompt_tokens,
                 "translation_completion_tokens": translation_completion_tokens,
-                # --- Add costs to results ---
                 "analysis_cost_usd": analysis_cost_usd,
                 "translation_cost_usd": translation_cost_usd,
                 "total_cost_usd": total_cost_usd,
@@ -311,7 +343,8 @@ def index():
         except (ValueError, RuntimeError, LangDetectException, Exception) as e:
             app.logger.error(f"Error during POST request processing: {e}", exc_info=True)
             error = f"Error: {e}"
-            delete_from_gcs(analysis_blob_name); delete_from_gcs(translation_blob_name)
+            # Removed GCS cleanup as nothing was uploaded
+            # delete_from_gcs(analysis_blob_name); delete_from_gcs(translation_blob_name)
             app.logger.info("--- Request Processing Failed ---")
 
     return render_template(
@@ -319,39 +352,63 @@ def index():
         results=results,
         error=error,
         target_languages=SUPPORTED_LANGUAGES,
-        target_language_code=target_language_code
+        target_language_code=target_language_code # Pass selected lang back for sticky selection
     )
 
-# --- [ download_results route remains unchanged ] ---
+# --- Modified download_results route ---
 @app.route('/download', methods=['POST'])
 def download_results():
-    analysis_blob_name = request.form.get('analysis_blob_name')
-    translation_blob_name = request.form.get('translation_blob_name')
+    # Retrieve data directly from the form post
+    analysis_json_str = request.form.get('analysis_json_str')
+    translated_text = request.form.get('translated_text')
     original_filename = request.form.get('original_filename', 'results')
-    if not analysis_blob_name or not translation_blob_name:
-         flash("Error: Missing information needed for download.", "error"); return redirect(url_for('index'))
-    app.logger.info(f"Preparing download for blobs: {analysis_blob_name}, {translation_blob_name}")
+    target_language_code = request.form.get('target_language_code', 'target') # Get lang code for naming
+
+    if analysis_json_str is None or translated_text is None: # Check if data is present
+         flash("Error: Missing result data needed for download.", "error");
+         app.logger.error("Download failed: Missing analysis_json_str or translated_text in form POST.")
+         return redirect(url_for('index'))
+
+    app.logger.info(f"Preparing download for results of: {original_filename}")
+
     try:
-        analysis_bytes = download_from_gcs(analysis_blob_name); translation_bytes = download_from_gcs(translation_blob_name)
-        safe_base_filename = re.sub(r'[^\w\-.]', '_', os.path.splitext(original_filename)[0]); analysis_filename_in_zip = f"{safe_base_filename}_analysis.json"
-        lang_code = 'target';
-        try: parts = translation_blob_name.split('_translated_'); lang_code = parts[-1].split('.')[0] if len(parts) > 1 else 'target'
-        except Exception: pass
-        translation_filename_in_zip = f"{safe_base_filename}_translated_{lang_code}.txt"
-        memory_file = io.BytesIO();
-        with zipfile.ZipFile(memory_file, 'w', zipfile.ZIP_DEFLATED) as zf: zf.writestr(analysis_filename_in_zip, analysis_bytes); zf.writestr(translation_filename_in_zip, translation_bytes)
-        memory_file.seek(0); app.logger.info(f"Created zip file in memory.")
+        # Encode the strings to bytes
+        analysis_bytes = analysis_json_str.encode('utf-8')
+        translation_bytes = translated_text.encode('utf-8')
+
+        # Prepare filenames for the zip archive
+        safe_base_filename = re.sub(r'[^\w\-.]', '_', os.path.splitext(original_filename)[0])
+        analysis_filename_in_zip = f"{safe_base_filename}_analysis.json"
+        translation_filename_in_zip = f"{safe_base_filename}_translated_{target_language_code}.txt" # Use target lang code
+
+        # Create zip file in memory
+        memory_file = io.BytesIO()
+        with zipfile.ZipFile(memory_file, 'w', zipfile.ZIP_DEFLATED) as zf:
+             zf.writestr(analysis_filename_in_zip, analysis_bytes)
+             zf.writestr(translation_filename_in_zip, translation_bytes)
+        memory_file.seek(0)
+        app.logger.info(f"Created zip file in memory.")
+
+        # Prepare response
         zip_filename = f"{safe_base_filename}_translation_results.zip"
-        response = send_file(memory_file, mimetype='application/zip', as_attachment=True, download_name=zip_filename); app.logger.info(f"Sending zip file '{zip_filename}'.")
-        delete_from_gcs(analysis_blob_name); delete_from_gcs(translation_blob_name)
+        response = send_file(
+            memory_file,
+            mimetype='application/zip',
+            as_attachment=True,
+            download_name=zip_filename
+        )
+        app.logger.info(f"Sending zip file '{zip_filename}'.")
+        # No GCS cleanup needed
         return response
-    except (RuntimeError, Exception) as e:
-         app.logger.error(f"Download error: {e}", exc_info=True); flash(f"Failed to prepare download: {e}", "error")
-         delete_from_gcs(analysis_blob_name); delete_from_gcs(translation_blob_name)
+
+    except Exception as e:
+         app.logger.error(f"Download preparation error: {e}", exc_info=True)
+         flash(f"Failed to prepare download zip: {e}", "error")
+         # No GCS cleanup needed
          return redirect(url_for('index'))
 
 if __name__ == '__main__':
     app.logger.info("Starting Flask application...")
-    # Note: Setting debug=False is recommended for production/stable use
     # Use Waitress or Gunicorn for production deployments instead of Flask dev server
-    app.run(debug=True, host='0.0.0.0', port=5000)
+    # Example using Waitress: waitress-serve --host=0.0.0.0 --port=5000 app:app
+    app.run(debug=True, host='0.0.0.0', port=5000) # debug=True for development ONLY
