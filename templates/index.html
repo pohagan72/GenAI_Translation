@@ -1,0 +1,100 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>File Translator & Analyzer</title>
+    <style>
+        body { font-family: sans-serif; margin: 20px; background-color: #f8f9fa; }
+        .container { max-width: 900px; margin: auto; background-color: #ffffff; padding: 30px; border-radius: 8px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); }
+        h1 { color: #333; text-align: center; margin-bottom: 30px;}
+        .drop-zone { border: 2px dashed #007bff; padding: 30px; text-align: center; margin-bottom: 20px; border-radius: 5px; background-color: #f0f8ff; transition: background-color 0.2s ease, border-color 0.2s ease; }
+        .drop-zone.dragover { border-color: #0056b3; background-color: #e6f2ff; }
+        #fileInput { display: none; }
+        label[for="fileInput"] { cursor: pointer; color: #007bff; font-weight: bold; }
+        #fileNameDisplay { margin-top: 10px; color: #555; font-style: italic; }
+        pre { background-color: #e9ecef; border: 1px solid #ced4da; padding: 15px; white-space: pre-wrap; word-wrap: break-word; border-radius: 4px; max-height: 300px; overflow-y: auto; font-family: monospace; font-size: 0.9em;}
+        .results { margin-top: 30px; border-top: 2px solid #eee; padding-top: 20px; }
+        .results h2 { color: #333; margin-bottom: 15px;}
+        .results h3 { color: #555; margin-top: 20px; margin-bottom: 10px; font-size: 1.1em;}
+        .error { color: #dc3545; background-color: #f8d7da; border: 1px solid #f5c6cb; padding: 10px 15px; border-radius: 4px; margin-bottom: 20px; }
+        .form-group { margin-bottom: 20px; }
+        label { display: block; margin-bottom: 5px; font-weight: bold; color: #555; }
+        button, select { display: inline-block; width: auto; padding: 10px 18px; margin-top: 10px; border-radius: 4px; border: 1px solid #007bff; background-color: #007bff; color: white; font-size: 1em; cursor: pointer; transition: background-color 0.2s ease; }
+        select { background-color: white; color: #333; border: 1px solid #ced4da; padding: 9px 15px; }
+        button:hover { background-color: #0056b3; border-color: #0056b3; }
+        .action-button { margin-right: 10px; }
+        form button[type="submit"] { min-width: 120px; }
+        .token-info { margin-top: 15px; font-size: 0.9em; color: #666; background-color: #f8f9fa; padding: 10px; border-radius: 4px; border: 1px solid #e0e0e0;}
+        .token-info strong { color: #333; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>File Translator & Analyzer</h1>
+
+        {% if error %}
+            <p class="error">{{ error }}</p>
+        {% endif %}
+
+        <form method="POST" enctype="multipart/form-data" id="uploadForm">
+            <div class="drop-zone" id="dropZone">
+                <label for="fileInput">Drag & drop your (.txt, .docx, .xlsx, .pptx, .pdf) file here, or click to select</label>
+                <input type="file" name="file" id="fileInput" accept=".txt,.docx,.xlsx,.pptx,.pdf" required>
+                <p id="fileNameDisplay"></p>
+            </div>
+
+            <div class="form-group">
+                <label for="target_language">Translate to:</label>
+                <select name="target_language" id="target_language" required>
+                    <option value="" disabled {% if target_language_code is none %}selected{% endif %}>-- Select Language --</option>
+                    {% for code, name in target_languages.items() %}
+                        <option value="{{ code }}" {% if target_language_code == code or (target_language_code is none and code == 'en') %}selected{% endif %}>
+                            {{ name }}
+                        </option>
+                    {% endfor %}
+                </select>
+            </div>
+
+            <button type="submit" class="action-button">Process File</button>
+        </form>
+
+        {% if results %}
+            <div class="results">
+                <h2>Results for: {{ results.original_filename }}</h2>
+
+                <!-- *** UPDATED Token & Cost Info Display *** -->
+                <div class="token-info">
+                    <strong>LLM Usage & Estimated Cost:</strong><br>
+                    Analysis Step - Input: {{ results.analysis_prompt_tokens | default('N/A') }} tokens / Output: {{ results.analysis_completion_tokens | default('N/A') }} tokens
+                        (Cost: $<span title="${{ results.analysis_cost_usd | default(0.0) }}">{{ "{:,.8f}".format(results.analysis_cost_usd | default(0.0)) }}</span>)
+                    <br>
+                    Translation Step - Input: {{ results.translation_prompt_tokens | default('N/A') }} tokens / Output: {{ results.translation_completion_tokens | default('N/A') }} tokens
+                        (Cost: $<span title="${{ results.translation_cost_usd | default(0.0) }}">{{ "{:,.8f}".format(results.translation_cost_usd | default(0.0)) }}</span>)
+                    <br>
+                    <strong>Total Estimated Cost: $<span title="${{ results.total_cost_usd | default(0.0) }}">{{ "{:,.8f}".format(results.total_cost_usd | default(0.0)) }}</span></strong>
+                </div>
+                <!-- *** END Token & Cost Info Display *** -->
+
+                <h3>Language Analysis (Original Text)</h3>
+                <pre id="analysisJson">{{ results.analysis_json_str }}</pre>
+
+                <h3>Translated Text ({{ target_languages.get(results.target_language, results.target_language) }})</h3> {# Use .get for safety #}
+                <pre>{{ results.translated_text }}</pre>
+
+                <form action="{{ url_for('download_results') }}" method="POST" style="display: inline-block;">
+                     <input type="hidden" name="analysis_blob_name" value="{{ results.analysis_blob_name }}">
+                     <input type="hidden" name="translation_blob_name" value="{{ results.translation_blob_name }}">
+                     <input type="hidden" name="original_filename" value="{{ results.original_filename }}">
+                     <button type="submit" class="action-button">Download Results (.zip)</button>
+                </form>
+
+            </div>
+        {% endif %}
+    </div>
+
+    <script>
+        // --- JavaScript remains the same ---
+        const dropZone = document.getElementById('dropZone'); const fileInput = document.getElementById('fileInput'); const fileNameDisplay = document.getElementById('fileNameDisplay'); dropZone.addEventListener('dragover', (e) => { e.preventDefault(); dropZone.classList.add('dragover'); }); dropZone.addEventListener('dragleave', () => { dropZone.classList.remove('dragover'); }); dropZone.addEventListener('drop', (e) => { e.preventDefault(); dropZone.classList.remove('dragover'); if (e.dataTransfer.files.length) { const allowedExtensions = /(\.txt|\.docx|\.xlsx|\.pptx|\.pdf)$/i; if (!allowedExtensions.exec(e.dataTransfer.files[0].name)) { alert('Invalid file type.'); return; } fileInput.files = e.dataTransfer.files; updateFileNameDisplay(); } }); fileInput.addEventListener('change', updateFileNameDisplay); function updateFileNameDisplay() { if (fileInput.files.length) { const allowedExtensions = /(\.txt|\.docx|\.xlsx|\.pptx|\.pdf)$/i; if (!allowedExtensions.exec(fileInput.files[0].name)) { alert('Invalid file type selected.'); fileInput.value = ''; fileNameDisplay.textContent = ''; return; } fileNameDisplay.textContent = `Selected: ${fileInput.files[0].name}`; } else { fileNameDisplay.textContent = ''; } } dropZone.addEventListener('click', (e) => { const labelElement = dropZone.querySelector('label[for="fileInput"]'); if (e.target === labelElement) { return; } if (e.target === dropZone && !fileInput.files.length) { fileInput.click(); } });
+    </script>
+</body>
+</html>

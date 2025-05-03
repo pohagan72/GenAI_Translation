@@ -1,0 +1,11 @@
+Flask
+python-dotenv
+google-generativeai
+google-cloud-storage
+requests
+langdetect
+python-docx
+openpyxl
+python-pptx
+PyPDF2
+gunicorn
