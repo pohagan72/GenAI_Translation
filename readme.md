@@ -1,4 +1,11 @@
+This app is designed to analyzed uploaded text for the number of languages, the words in each language and also provide text translation. 
 
+The output is shown to the user in the GUI and also made available for download in a .zip file. No data is stored or persisted during or after the translation process.
+
+The LLM used is Google Gemini 2.0-Flash. 100% of the python and html code was developed using GenAI.
+
+Screenshot of app response:
+![alt text](image.png)
 
 ### Text Analysis:
 
