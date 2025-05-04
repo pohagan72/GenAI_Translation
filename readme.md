@@ -4,7 +4,7 @@ The output is shown to the user in the GUI and also made available for download 
 
 The LLM used is Google Gemini 2.0-Flash. 100% of the python and html code was developed using GenAI.
 
-Screenshot of app response: 
+Screenshot of app response: https://github.com/pohagan72/GenAI_Translation/blob/master/output-screenshot.jpg 
 
 ### Text Analysis:
 
